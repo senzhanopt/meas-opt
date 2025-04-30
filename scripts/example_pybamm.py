@@ -11,11 +11,11 @@ parameter_values["Ambient temperature [K]"] = 308.15
 #parameter_values["Current function [A]"] = 0.68
 
 # set experiment
-experiment = pybamm.Experiment(["Charge at 1 A until 4.2 V", "Hold at 4.2 V until 50 mA"])
+experiment = pybamm.Experiment(["Discharge at 1 A until 2.5 V", "Rest for 1 hour"]) # "Hold at 4.2 V until 50 mA"
 
 # set simulation 
 sim = pybamm.Simulation(model, parameter_values = parameter_values, experiment = experiment)
-sim.build_for_experiment(initial_soc = 0.0)
+sim.build_for_experiment(initial_soc = 1.0)
 
 # extract result
 sim.solve([0, 3600])
@@ -31,5 +31,8 @@ plt.title("Cell temperature [C]")
 plt.xlabel("Time [h]")
 plt.show()
 
-soc = 0.0 - sol["Discharge capacity [A.h]"].data[-1] / parameter_values["Nominal cell capacity [A.h]"]
+soc = 1.0 - sol["Discharge capacity [A.h]"].data[-1] / parameter_values["Nominal cell capacity [A.h]"]
 print(f"End SoC is: {soc:.3f}")
+
+total_energy = sol["Power [W]"].data.mean() * sol["Time [h]"].data[-1]
+print(f"Total energy is: {total_energy:.3f} [W.h]")
