@@ -1,6 +1,7 @@
 import pybamm
 import math
 import matplotlib.pyplot as plt
+import numpy as np
 
 class Battery:
     
@@ -14,6 +15,13 @@ class Battery:
         self.cell_model = cell_model
         self.thermal_model = thermal_model
         self.params_cell = params_cell
+        self.hist_soc = np.array([soc])
+        self.hist_temp_cell = np.array([temp_cell])
+        self.hist_dt_soc = np.array([soc])
+        self.hist_dt_temp_cell = np.array([temp_cell])
+        self.hist_dt_power = np.array([])
+        self.hist_dt_voltage = np.array([])
+        self.hist_dt_current = np.array([])
         
     def initialize(self):    
         
@@ -77,20 +85,37 @@ class Battery:
         traj_soc = self.soc - sol["Discharge capacity [A.h]"].data / self.parameter_values["Nominal cell capacity [A.h]"]
         self.temp_cell = traj_temp[-1]
         self.soc = traj_soc[-1]
+        self.hist_soc = np.append(self.hist_soc, self.soc)
+        self.hist_temp_cell = np.append(self.hist_temp_cell, self.temp_cell)
+        self.hist_dt_temp_cell = np.append(self.hist_dt_temp_cell, traj_temp)    
+        self.hist_dt_soc = np.append(self.hist_dt_soc, traj_soc)         
+        self.hist_dt_power = np.append(self.hist_dt_power, sol["Power [W]"].entries)         
+        self.hist_dt_current = np.append(self.hist_dt_current, sol["Current [A]"].entries)         
+        self.hist_dt_voltage = np.append(self.hist_dt_voltage, sol["Voltage [V]"].entries)         
     
-        return traj_temp, traj_soc
+    def charge_ts(self, arr_power, arr_temp_ambient, length_t = 0.25):
+        if len(arr_power) != len(arr_temp_ambient):
+            raise Exception("Check lengths of arrays.")
+        
+        for power, temp_ambient in zip(arr_power, arr_temp_ambient):
+            self.charge(power = power, temp_ambient = temp_ambient, length_t = length_t)
         
 if __name__ == "__main__":
-    bat1 = Battery()
+    bat1 = Battery(soc = 0.0)
     bat1.initialize()
-    traj_temp1, traj_soc1 = bat1.charge(power = 10)
+    #traj_temp1, traj_soc1 = bat1.charge(power = 10)
+    bat1.charge_ts(arr_power = [5], arr_temp_ambient=[25])
     
     plt.figure()
-    plt.plot(traj_temp1)
+    plt.plot(bat1.hist_dt_soc)
     plt.show()
     
     plt.figure()
-    plt.plot(traj_soc1)
+    plt.plot(bat1.hist_dt_temp_cell)
+    plt.show()
+    
+    plt.figure()
+    plt.plot(bat1.hist_dt_voltage)
     plt.show()
     
     
