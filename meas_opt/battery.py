@@ -73,7 +73,7 @@ class Battery:
         if power > 0:
             experiment = pybamm.Experiment([f"Charge at {power_cell} W for {length_t*60} minutes"])
         elif power < 0:
-            experiment = pybamm.Experiment([f"Disharge at {power_cell} W for {length_t*60} minutes"])
+            experiment = pybamm.Experiment([f"Discharge at {power_cell} W for {length_t*60} minutes"])
         else:
             experiment = pybamm.Experiment([f"Rest for {length_t*60} minutes"])
         self.parameter_values["Ambient temperature [K]"] = temp_ambient + 273.15    
