@@ -73,25 +73,28 @@ class Battery:
         if power > 0:
             experiment = pybamm.Experiment([f"Charge at {power_cell} W for {length_t*60} minutes"])
         elif power < 0:
-            experiment = pybamm.Experiment([f"Discharge at {power_cell} W for {length_t*60} minutes"])
+            experiment = pybamm.Experiment([f"Discharge at {-power_cell} W for {length_t*60} minutes"])
         else:
             experiment = pybamm.Experiment([f"Rest for {length_t*60} minutes"])
         self.parameter_values["Ambient temperature [K]"] = temp_ambient + 273.15    
-        self.parameter_values["Initial temperature [K]"] = self.temp_cell + 273.15    
+        self.parameter_values["Initial temperature [K]"] = self.temp_cell + 273.15  
         sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values, experiment = experiment)
         sim.build_for_experiment(initial_soc = self.soc)  
-        sol = sim.solve()
-        traj_temp = sol["Cell temperature [C]"].entries[0,:]
-        traj_soc = self.soc - sol["Discharge capacity [A.h]"].data / self.parameter_values["Nominal cell capacity [A.h]"]
-        self.temp_cell = traj_temp[-1]
-        self.soc = traj_soc[-1]
-        self.hist_soc = np.append(self.hist_soc, self.soc)
-        self.hist_temp_cell = np.append(self.hist_temp_cell, self.temp_cell)
-        self.hist_dt_temp_cell = np.append(self.hist_dt_temp_cell, traj_temp)    
-        self.hist_dt_soc = np.append(self.hist_dt_soc, traj_soc)         
-        self.hist_dt_power = np.append(self.hist_dt_power, sol["Power [W]"].entries)         
-        self.hist_dt_current = np.append(self.hist_dt_current, sol["Current [A]"].entries)         
-        self.hist_dt_voltage = np.append(self.hist_dt_voltage, sol["Voltage [V]"].entries)         
+        try:
+            sol = sim.solve()
+            traj_temp = sol["Cell temperature [C]"].entries[0,:]
+            traj_soc = self.soc - sol["Discharge capacity [A.h]"].data / self.parameter_values["Nominal cell capacity [A.h]"]
+            self.temp_cell = np.max(traj_temp)
+            self.soc = traj_soc[-1]
+            self.hist_soc = np.append(self.hist_soc, self.soc)
+            self.hist_temp_cell = np.append(self.hist_temp_cell, self.temp_cell)
+            self.hist_dt_temp_cell = np.append(self.hist_dt_temp_cell, traj_temp)    
+            self.hist_dt_soc = np.append(self.hist_dt_soc, traj_soc)         
+            self.hist_dt_power = np.append(self.hist_dt_power, sol["Power [W]"].entries)         
+            self.hist_dt_current = np.append(self.hist_dt_current, sol["Current [A]"].entries)         
+            self.hist_dt_voltage = np.append(self.hist_dt_voltage, sol["Voltage [V]"].entries)
+        except:
+            print("Solver fails to converge.")
     
     def charge_ts(self, arr_power, arr_temp_ambient, length_t = 0.25):
         if len(arr_power) != len(arr_temp_ambient):
@@ -101,7 +104,7 @@ class Battery:
             self.charge(power = power, temp_ambient = temp_ambient, length_t = length_t)
         
 if __name__ == "__main__":
-    bat1 = Battery(soc = 0.0)
+    bat1 = Battery(soc = 0.9, params_cell="Chen2020")
     bat1.initialize()
     #traj_temp1, traj_soc1 = bat1.charge(power = 10)
     bat1.charge_ts(arr_power = [5], arr_temp_ambient=[25])
