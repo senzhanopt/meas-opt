@@ -11,17 +11,15 @@ class Battery:
         self.p_max = p_max
         self.e_max = e_max
         self.soc = soc
+        self.soc_init = soc
         self.temp_cell = temp_cell
         self.cell_model = cell_model
         self.thermal_model = thermal_model
         self.params_cell = params_cell
         self.hist_soc = np.array([soc])
         self.hist_temp_cell = np.array([temp_cell])
-        self.hist_dt_soc = np.array([soc])
-        self.hist_dt_temp_cell = np.array([temp_cell])
-        self.hist_dt_power = np.array([])
-        self.hist_dt_voltage = np.array([])
-        self.hist_dt_current = np.array([])
+        self.sol = None
+        self.initialize()
         
     def initialize(self):    
         
@@ -62,7 +60,14 @@ class Battery:
         eta_round_trip = total_energy_dis / total_energy_ch
         self.eta_ch, self.eta_dis = eta_round_trip**0.5, eta_round_trip**0.5
         self.n_cell = math.ceil(self.e_max*1E3*2/(total_energy_dis+total_energy_ch))
-    
+        
+    def update_heat_transfer_coefficient(self, val_new):
+        '''
+        update parameters for simulation
+
+        '''
+        print(f"By default: {self.parameter_values['Total heat transfer coefficient [W.m-2.K-1]']}")
+        self.parameter_values["Total heat transfer coefficient [W.m-2.K-1]"] = val_new
         
     def charge(self, power = 0.0, length_t = 0.25, temp_ambient = 25):
         '''
@@ -79,38 +84,44 @@ class Battery:
         self.parameter_values["Ambient temperature [K]"] = temp_ambient + 273.15    
         self.parameter_values["Initial temperature [K]"] = self.temp_cell + 273.15  
         sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values, experiment = experiment)
-        sim.build_for_experiment(initial_soc = self.soc)  
         try:
-            sol = sim.solve()
+            if self.sol == None:
+                sim.build_for_experiment(initial_soc = self.soc)  
+                sol = sim.solve()
+            else:
+                sol = sim.solve(starting_solution = self.sol)
+            self.sol = sol
             traj_temp = sol["Cell temperature [C]"].entries[0,:]
-            traj_soc = self.soc - sol["Discharge capacity [A.h]"].data / self.parameter_values["Nominal cell capacity [A.h]"]
-            self.temp_cell = np.max(traj_temp)
+            traj_soc = self.soc_init - sol["Discharge capacity [A.h]"].data \
+                / self.parameter_values["Nominal cell capacity [A.h]"]           
+            self.temp_cell = traj_temp[-1]
             self.soc = traj_soc[-1]
             self.hist_soc = np.append(self.hist_soc, self.soc)
             self.hist_temp_cell = np.append(self.hist_temp_cell, self.temp_cell)
-            self.hist_dt_temp_cell = np.append(self.hist_dt_temp_cell, traj_temp)    
-            self.hist_dt_soc = np.append(self.hist_dt_soc, traj_soc)         
-            self.hist_dt_power = np.append(self.hist_dt_power, sol["Power [W]"].entries)         
-            self.hist_dt_current = np.append(self.hist_dt_current, sol["Current [A]"].entries)         
-            self.hist_dt_voltage = np.append(self.hist_dt_voltage, sol["Voltage [V]"].entries)
+            self.hist_dt_temp_cell = traj_temp   
+            self.hist_dt_soc = traj_soc       
+            self.hist_dt_power = sol["Power [W]"].entries     
+            self.hist_dt_current = sol["Current [A]"].entries      
+            self.hist_dt_voltage = sol["Voltage [V]"].entries
         except:
             print("Solver fails to converge.")
+
     
     def charge_ts(self, arr_power, arr_temp_ambient, length_t = 0.25):
-        if len(arr_power) != len(arr_temp_ambient):
+        if len(arr_power) != len(arr_temp_ambient) or len(arr_temp_ambient) <= 1:
             raise Exception("Check lengths of arrays.")
         
         for power, temp_ambient in zip(arr_power, arr_temp_ambient):
             self.charge(power = power, temp_ambient = temp_ambient, length_t = length_t)
         
 if __name__ == "__main__":
-    bat1 = Battery(soc = 0.9, params_cell="Chen2020")
+    bat1 = Battery(soc = 0.2, params_cell="Chen2020")
     bat1.initialize()
     #traj_temp1, traj_soc1 = bat1.charge(power = 10)
-    bat1.charge_ts(arr_power = [5], arr_temp_ambient=[25])
+    bat1.charge_ts(arr_power = [5,6,5,6,5,6], arr_temp_ambient=[25,25,25,25,25,25])
     
     plt.figure()
-    plt.plot(bat1.hist_dt_soc)
+    plt.plot(bat1.hist_soc)
     plt.show()
     
     plt.figure()
