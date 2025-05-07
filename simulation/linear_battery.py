@@ -33,7 +33,6 @@ def simulate_battery(args):
     power, soc = args
     print(f"PID {os.getpid()} - Power {power} kW, SoC {soc}.")
     bat = Battery(p_max=p_max, e_max=e_max, temp_cell=temp_cell, soc=soc)
-    bat.initialize()
     bat.charge(power=power, length_t = 5/60)
     temp = bat.temp_cell
     voltage = bat.hist_dt_voltage[-1]
