@@ -7,7 +7,8 @@ class Battery:
     
     def __init__(self, p_max = 15.0, e_max = 10.0, soc = 0.5, temp_cell = 25, 
                  cell_model = "dfn", thermal_model = "lumped", 
-                 params_cell = "Chen2020"):
+                 params_cell = "Chen2020",
+                 soc_min = 0.0, soc_max = 1.0):
         self.p_max = p_max
         self.e_max = e_max
         self.soc = soc
@@ -16,6 +17,8 @@ class Battery:
         self.cell_model = cell_model
         self.thermal_model = thermal_model
         self.params_cell = params_cell
+        self.soc_min = soc_min
+        self.soc_max = soc_max
         self.hist_soc = np.array([soc])
         self.hist_temp_cell = np.array([temp_cell])
         self.sol = None

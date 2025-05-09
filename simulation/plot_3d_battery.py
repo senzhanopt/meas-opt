@@ -61,4 +61,3 @@ if __name__ == '__main__':
     # Plot voltage surface
     plot_3d_surface(list_voltage, z_label='Cell voltage (V)')
     
-    
