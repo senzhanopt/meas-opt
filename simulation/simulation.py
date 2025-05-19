@@ -1,10 +1,9 @@
 import sys
-sys.path.append('../meas_opt')
+sys.path.append('../battery')
 from battery import Battery
 import numpy as np
 np.random.seed(42)
 import matplotlib.pyplot as plt
-plt.style.use(['science', 'nature'])
 import simbench as sb
 import pandapower as pp
 import pandas as pd
@@ -15,8 +14,10 @@ import warnings
 warnings.filterwarnings('ignore')
 from tqdm import tqdm
 import time
+import cvxpy as cp
+from multiprocessing import Pool
 
-def powerflow(p_load, q_load, p_sgen, q_sgen, p_storage, q_storage, update_data, pgm):
+def powerflow(p_load, q_load, p_sgen, q_sgen, p_storage, q_storage):
     update_data['sym_load']['p_specified'] = np.concatenate((p_load, p_storage))*1E3
     update_data['sym_load']['q_specified'] = np.concatenate((q_load, q_storage))*1E3
     update_data['sym_gen']['p_specified'] = p_sgen * 1E3
@@ -26,14 +27,101 @@ def powerflow(p_load, q_load, p_sgen, q_sgen, p_storage, q_storage, update_data,
     dict_return = {}
     dict_return["v"] = output_data['node']['u_pu'][1:]
     dict_return["loading"] = output_data['transformer']['loading'][0]
-    dict_return["P_trafo"] = output_data['transformer']['p_from']*1E-3
-    dict_return["Q_trafo"] = output_data['transformer']['q_from']*1E-3
+    dict_return["p_trafo"] = output_data['transformer']['p_from']*1E-3
+    dict_return["q_trafo"] = output_data['transformer']['q_from']*1E-3
     dict_return["p_net"] = output_data['node']['p']*1E-3
     dict_return["q_net"] = output_data['node']['q']*1E-3
     return dict_return
 
+def prob_lyapunov():
+    
+    # cp parameters, can be updated without rebuilding optimizaiton problem
+    v_meas = cp.Parameter(n_bus-1) # exclude slack bus
+    soc_storage = cp.Parameter(n_storage)
+    p_ch_last = cp.Parameter(n_storage)
+    q_ch_last = cp.Parameter(n_storage)
+    p_max_pv = cp.Parameter(n_pv)
+    p_pv_last = cp.Parameter(n_pv)
+    q_pv_last = cp.Parameter(n_pv)
+    p_trafo = cp.Parameter(1)
+    q_trafo = cp.Parameter(1)
+    
+    # variables
+    p_ch = cp.Variable(n_storage)
+    q_ch = cp.Variable(n_storage)
+    p_pv = cp.Variable(n_pv, nonneg = True)
+    q_pv = cp.Variable(n_pv)
+    
+    # constraints
+    cons = []
+    for i in range(n_storage):
+        cons += [cp.square(p_ch[i]) + cp.square(q_ch[i]) <= s_storage[i]**2]
+        cons += [p_ch[i] * itr_length * eta_ch <= (soc_max-soc_storage[i])*e_storage[i]]
+        cons += [p_ch[i] * itr_length >= eta_dis * (soc_min-soc_storage[i])*e_storage[i]]
+    
+    for i in range(n_pv):
+        cons += [cp.square(p_pv[i]) + cp.square(q_pv[i]) <= s_pv[i]**2]
+    cons += [p_pv <= p_max_pv]
+        
+    cons += [v_meas + mat_R_storage @ (p_ch - p_ch_last)
+                    + mat_X_storage @ (q_ch - q_ch_last)
+                    + mat_R_pv @ (p_pv - p_pv_last)
+                    + mat_X_pv @ (q_pv - q_pv_last) <= v_upp*np.ones(n_bus-1)]
+    cons += [v_meas + mat_R_storage @ (p_ch - p_ch_last)
+                    + mat_X_storage @ (q_ch - q_ch_last)
+                    + mat_R_pv @ (p_pv - p_pv_last)
+                    + mat_X_pv @ (q_pv - q_pv_last) >= v_low**np.ones(n_bus-1)]
+
+    cons += [cp.square(p_trafo+cp.sum(p_ch)-cp.sum(p_ch_last)-cp.sum(p_pv)+cp.sum(p_pv_last)) 
+             + cp.square(q_trafo+cp.sum(q_ch)-cp.sum(q_ch_last)-cp.sum(q_pv)+cp.sum(q_pv_last)) <= s_trafo**2 ]
+    # objective
+    obj = cp.Minimize(cp.sum_squares(p_max_pv-p_pv) + 0.1 * cp.sum_squares(q_pv)
+                      + 0.1 * cp.sum_squares(p_ch) + 0.1 * cp.sum_squares(q_ch) 
+                      + 0.05 * cp.sum(cp.multiply(cp.multiply(soc_storage-soc_init,e_storage),p_ch)))
+    prob = cp.Problem(obj, cons)
+    
+    return {"prob": prob,
+            "p_ch": p_ch,
+            "q_ch": q_ch,
+            "p_pv": p_pv,
+            "q_pv": q_pv,
+            "v_meas": v_meas,
+            "p_trafo": p_trafo,
+            "q_trafo": q_trafo,
+            "soc_storage": soc_storage,
+            "p_max_pv": p_max_pv,
+            "p_ch_last": p_ch_last,
+            "q_ch_last": q_ch_last,
+            "p_pv_last": p_pv_last,
+            "q_pv_last": q_pv_last
+            }
+
+def solve_prob_lyapunov(v_meas, p_trafo, q_trafo, soc_storage, p_max_pv,
+                        p_ch_last, q_ch_last, p_pv_last, q_pv_last):
+    prob_lyapunov["v_meas"].value = v_meas
+    prob_lyapunov["p_trafo"].value = p_trafo
+    prob_lyapunov["q_trafo"].value = q_trafo
+    prob_lyapunov["soc_storage"].value = soc_storage
+    prob_lyapunov["p_max_pv"].value = p_max_pv
+    prob_lyapunov["p_ch_last"].value = p_ch_last
+    prob_lyapunov["q_ch_last"].value = q_ch_last
+    prob_lyapunov["p_pv_last"].value = p_pv_last
+    prob_lyapunov["q_pv_last"].value = q_pv_last
+    try:
+        prob_lyapunov["prob"].solve(solver = cp.GUROBI)
+    except:
+        return p_ch_last, q_ch_last, p_pv_last, q_pv_last
+    else:
+        if prob_lyapunov["prob"].status == "optimal":
+            return prob_lyapunov["p_ch"].value, prob_lyapunov["q_ch"].value, \
+            prob_lyapunov["p_pv"].value, prob_lyapunov["q_pv"].value
+        else:            
+            return p_ch_last, q_ch_last, p_pv_last, q_pv_last
+
+
+#%% similation
 # simulation parameters
-start, end = 224, 252
+start, end = 224, 225
 n_timesteps = (end-start)*96
 n_itr = 3 # 5-minute control resolution
 itr_length = 0.25 / n_itr # in hour
@@ -50,8 +138,8 @@ net = sb.get_simbench_net('1-LV-rural2--2-no_sw')
 net.ext_grid.vm_pu = 1.0
 net.trafo.tap_pos = 0
 net.trafo.sn_mva *= 1.6 # increase the trafo capacity from 250 to 400 kVA
-net.sgen = pd.read_excel('sgen.xlsx', index_col = 0).iloc[0:n_pv,:]
-net.storage = pd.read_excel('storage.xlsx', index_col = 0).iloc[0:n_storage,:]
+net.sgen = pd.read_excel('data/sgen.xlsx', index_col = 0).iloc[0:n_pv,:]
+net.storage = pd.read_excel('data/storage.xlsx', index_col = 0).iloc[0:n_storage,:]
 #pp.plotting.to_html(net, 'grid.html')
 n_bus = len(net.bus) # 97 bus
 n_load = len(net.load)
@@ -60,6 +148,8 @@ s_pv = net.sgen.sn_mva.to_numpy() * 1E3
 s_storage = net.storage.sn_mva.to_numpy() * 1E3
 e_storage = net.storage.max_e_mwh.to_numpy() * 1E3
 s_trafo = net.trafo.sn_mva[0] * 1E3 
+soc_min, soc_max, soc_init = 0.0, 1.0, 0.25
+eta_ch, eta_dis = 0.97, 0.97
 
 # read load profiles
 prof = sb.get_absolute_values(net, 1)
@@ -82,6 +172,165 @@ update_sym_load["id"] = input_data["sym_load"]['id'][:n_load_storage ]  # same I
 update_sym_gen = initialize_array(DatasetType.update, ComponentType.sym_gen, n_pv )
 update_sym_gen["id"] = input_data["sym_gen"]['id']  # same ID
 update_data = {ComponentType.sym_load: update_sym_load, ComponentType.sym_gen: update_sym_gen}
+
+# read constant network sensitivities
+mat_R_storage = pd.read_csv('data/mat_R_storage.csv', index_col = 0).to_numpy()
+mat_X_storage = pd.read_csv('data/mat_X_storage.csv', index_col = 0).to_numpy()
+mat_R_pv = pd.read_csv('data/mat_R_pv.csv', index_col = 0).to_numpy()
+mat_X_pv = pd.read_csv('data/mat_X_pv.csv', index_col = 0).to_numpy()
+
+# build optimization problem instance
+prob_lyapunov = prob_lyapunov()
+
+# store all iterates
+mat_p_storage = np.zeros((n_timesteps*n_itr, n_storage))
+mat_q_storage = np.zeros((n_timesteps*n_itr, n_storage))
+mat_soc_storage = np.zeros((n_timesteps*n_itr+1, n_storage))
+mat_p_pv = np.zeros((n_timesteps*n_itr, n_pv))
+mat_q_pv = np.zeros((n_timesteps*n_itr, n_pv))
+mat_v = np.ones((n_timesteps*n_itr, n_bus-1))
+mat_loading = np.zeros(n_timesteps*n_itr)
+mat_p_trafo = np.zeros(n_timesteps*n_itr)
+
+# initialize
+p_pv = copy.deepcopy(sgen_p[0,:]) 
+q_pv = np.zeros(n_pv) 
+p_storage = np.zeros(n_storage) 
+q_storage = np.zeros(n_storage)
+soc = soc_init * np.ones(n_storage)
+mat_soc_storage[0,:] = soc
+
+# iterating process
+for itr in tqdm(range(n_timesteps * n_itr)):
+    if itr % n_itr == 0:
+        load_p_current = load_p[itr//n_itr,:]
+        load_q_current = load_q[itr//n_itr,:]
+        sgen_p_current = sgen_p[itr//n_itr,:]
+    
+    # pv and storage setpoint projection
+    p_pv = np.minimum(p_pv, sgen_p_current)
+    for i in range(n_storage):
+        if p_storage[i] >= 0:
+            p_max_ch = (soc_max-soc[i])*e_storage[i]/(itr_length*eta_ch)
+            p_storage[i] = min(p_storage[i], p_max_ch)
+        else:
+            p_max_dis = (soc[i]-soc_min)*e_storage[i]*eta_dis/itr_length
+            p_storage[i] = max(p_storage[i], -p_max_dis)
+
+    # save iterates
+    mat_p_storage[itr,:] = p_storage
+    mat_q_storage[itr,:] = q_storage
+    soc += (eta_ch*p_storage*(p_storage>=0)+p_storage*(p_storage<=0)/eta_dis)*itr_length/e_storage
+    mat_soc_storage[itr+1,:] = soc
+    mat_p_pv[itr,:] = p_pv
+    mat_q_pv[itr,:] = q_pv
+
+    # grid calculation
+    dict_return = powerflow(load_p_current, load_q_current, p_pv, q_pv, p_storage, q_storage)
+    v = dict_return["v"]
+    loading = dict_return["loading"]
+    p_trafo = dict_return["p_trafo"]
+    q_trafo = dict_return["q_trafo"]
+    pf_trafo = p_trafo / np.sqrt(p_trafo**2+q_trafo**2)
+    rpf_trafo = q_trafo / np.sqrt(p_trafo**2+q_trafo**2)
+    mat_v[itr, :] = v
+    mat_loading[itr] = loading
+    mat_p_trafo[itr] = p_trafo
+    
+    # call optimization
+    p_storage, q_storage, p_pv, q_pv = solve_prob_lyapunov(v, p_trafo, q_trafo, soc, sgen_p_current,
+                         p_storage, q_storage, p_pv, q_pv)
+    
+
+# electrochemical simulation of batteries
+daily_temperature = pd.read_csv('data/summer_day_temperature_profile_5min.csv', index_col = 0)["Temperature (C)"].to_numpy()
+mat_temp = np.zeros((n_timesteps*n_itr+1, n_storage))
+mat_voltage = np.zeros((n_timesteps*n_itr+1, n_storage))
+def process_storage(i):
+    battery = Battery(p_max=s_storage[i],e_max=e_storage[i],soc=soc_init,temp_cell=daily_temperature[0])
+    battery.charge_ts(mat_p_storage[:, i], daily_temperature, itr_length)
+    return battery.hist_temp_cell, battery.hist_voltage
+#with Pool() as pool:
+#    results = pool.map(process_storage, range(1))
+l_b = [0]
+for i in l_b:
+    hist_temp_cell, hist_voltage = process_storage(i)
+    mat_temp[:, i] = hist_temp_cell
+    mat_voltage[:, i] = hist_voltage
+
+if True:
+    # visualization
+    for b in list_bus_visual:
+        plt.plot(mat_v[:,b-1], label = f'bus {b}')
+    plt.legend()
+    plt.title("voltage")
+    plt.show()    
+    
+    plt.plot(mat_loading[:], label = "trafo")
+    plt.legend()
+    plt.title("loading")
+    plt.show()
+    
+    plt.plot(mat_p_trafo[:], label = "trafo")
+    plt.legend()
+    plt.title("p trafo")
+    plt.show()
+    
+    for i in range(4):
+        plt.plot(mat_p_pv[:,i], label = f'pv {i}')
+    plt.legend()
+    plt.title("pv")
+    plt.show()    
+    
+    for i in range(4):
+        plt.plot(mat_p_storage[:,i], label = f'storage {i}')
+    plt.legend()
+    plt.title("storage")
+    plt.show()    
+    
+    
+    for i in range(4):
+        plt.plot(mat_soc_storage[:,i], label = f'storage {i}')
+    plt.legend()
+    plt.title("soc")
+    plt.show()
+    
+    for i in l_b:
+        plt.plot(mat_voltage[:, i], label = f'storage {i}')
+    plt.legend()
+    plt.title("voltage")
+    plt.show()        
+
+    for i in l_b:
+        plt.plot(mat_temp[:, i], label = f'storage {i}')
+    plt.plot(daily_temperature, label = "ambient")
+    plt.legend()
+    plt.title("temperature")
+    plt.show()        
+        
+        
+        
+    name = "_lyapunov"
+    pd.DataFrame(mat_p_pv).to_csv('result/' + 'mat_p_pv' + name +'.csv')
+    pd.DataFrame(mat_q_pv).to_csv('result/' + 'mat_q_pv' + name +'.csv')
+    pd.DataFrame(mat_v).to_csv('result/' + 'mat_v' + name +'.csv')
+    pd.DataFrame(mat_loading).to_csv('result/' + 'mat_loading' + name +'.csv')
+    pd.DataFrame(mat_p_storage).to_csv('result/' + 'mat_p_storage' + name +'.csv')
+    pd.DataFrame(mat_q_storage).to_csv('result/' + 'mat_q_storage' + name +'.csv')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
