@@ -2,6 +2,7 @@ import pybamm
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+from tqdm import tqdm
 
 class Battery:
     
@@ -21,6 +22,7 @@ class Battery:
         self.soc_max = soc_max
         self.hist_soc = np.array([soc])
         self.hist_temp_cell = np.array([temp_cell])
+        self.hist_voltage = np.array([])
         self.sol = None
         self.initialize()
         
@@ -84,28 +86,34 @@ class Battery:
             experiment = pybamm.Experiment([f"Discharge at {-power_cell} W for {length_t*60} minutes"])
         else:
             experiment = pybamm.Experiment([f"Rest for {length_t*60} minutes"])
+        self.experiment = experiment
         self.parameter_values["Ambient temperature [K]"] = temp_ambient + 273.15    
         self.parameter_values["Initial temperature [K]"] = self.temp_cell + 273.15  
         sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values, experiment = experiment)
+        self.sim = sim
         try:
             if self.sol == None:
                 sim.build_for_experiment(initial_soc = self.soc)  
                 sol = sim.solve()
+                self.hist_voltage = np.append(self.hist_voltage, sol["Voltage [V]"].entries[0])
             else:
                 sol = sim.solve(starting_solution = self.sol)
             self.sol = sol
             traj_temp = sol["Cell temperature [C]"].entries[0,:]
             traj_soc = self.soc_init - sol["Discharge capacity [A.h]"].data \
-                / self.parameter_values["Nominal cell capacity [A.h]"]           
+                / self.parameter_values["Nominal cell capacity [A.h]"]  
+            traj_voltage = sol["Voltage [V]"].entries
             self.temp_cell = traj_temp[-1]
             self.soc = traj_soc[-1]
+            self.voltage = traj_voltage[-1]
             self.hist_soc = np.append(self.hist_soc, self.soc)
+            self.hist_voltage = np.append(self.hist_voltage, self.voltage)
             self.hist_temp_cell = np.append(self.hist_temp_cell, self.temp_cell)
             self.hist_dt_temp_cell = traj_temp   
             self.hist_dt_soc = traj_soc       
             self.hist_dt_power = sol["Power [W]"].entries     
             self.hist_dt_current = sol["Current [A]"].entries      
-            self.hist_dt_voltage = sol["Voltage [V]"].entries
+            self.hist_dt_voltage = traj_voltage
         except:
             print("Solver fails to converge.")
 
@@ -114,7 +122,8 @@ class Battery:
         if len(arr_power) != len(arr_temp_ambient) or len(arr_temp_ambient) <= 1:
             raise Exception("Check lengths of arrays.")
         
-        for power, temp_ambient in zip(arr_power, arr_temp_ambient):
+        for i in tqdm(range(len(arr_power))):
+            power, temp_ambient = arr_power[i], arr_temp_ambient[i]
             self.charge(power = power, temp_ambient = temp_ambient, length_t = length_t)
         
 if __name__ == "__main__":
