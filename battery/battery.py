@@ -8,7 +8,7 @@ class Battery:
     
     def __init__(self, p_max = 15.0, e_max = 10.0, soc = 0.5, temp_cell = 25, 
                  cell_model = "dfn", thermal_model = "lumped", 
-                 params_cell = "Chen2020",
+                 params_cell = "Chen2020", operating_mode = "power",
                  soc_min = 0.0, soc_max = 1.0):
         self.p_max = p_max
         self.e_max = e_max
@@ -18,6 +18,7 @@ class Battery:
         self.cell_model = cell_model
         self.thermal_model = thermal_model
         self.params_cell = params_cell
+        self.operating_mode = operating_mode
         self.soc_min = soc_min
         self.soc_max = soc_max
         self.hist_soc = np.array([soc])
@@ -26,14 +27,15 @@ class Battery:
         self.sol = None
         self.initialize()
         
-    def initialize(self):    
+    def initialize(self, power_cell = 9.0):    
         
         '''
         determine number of cells and efficiencies
         
         '''
-        # charging experiment
-        options = {"cell geometry": "pouch", "thermal": self.thermal_model}
+
+        options = {"cell geometry": "pouch", "thermal": self.thermal_model,
+                   "operating mode": self.operating_mode}
         if self.cell_model == "dfn":
             self.model = pybamm.lithium_ion.DFN(options)
         else:
@@ -41,25 +43,22 @@ class Battery:
         self.parameter_values = pybamm.ParameterValues(self.params_cell)
         self.v_low_cut = self.parameter_values["Lower voltage cut-off [V]"]
         self.v_upp_cut = self.parameter_values["Upper voltage cut-off [V]"]
-        experiment_ch = pybamm.Experiment([f"Charge at C/2 until {self.v_upp_cut} V", 
-                                           f"Hold at {self.v_upp_cut} V until C/50"])
-        sim_ch = pybamm.Simulation(self.model, parameter_values = 
-                                   self.parameter_values, experiment = 
-                                   experiment_ch)
-        sim_ch.build_for_experiment(initial_soc = 0.0)
-        sol_ch = sim_ch.solve()
-        total_energy_ch = -sol_ch["Power [W]"].data.mean() * sol_ch["Time [h]"].data[-1]
-        #print(f"Total energy charge is: {total_energy_ch:.2f} [W.h]")
+        #self.cap_nominal = self.parameter_values["Nominal cell capacity [A.h]"]  
+        self.parameter_values.update({"Power function [W]": pybamm.InputParameter("Power [W]")}, 
+                                     check_already_exists=False)
+        sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values)
         
-        # discharging experiment
-        experiment_dis = pybamm.Experiment([f"Discharge at C/2 until {self.v_low_cut} V"])
-        sim_dis = pybamm.Simulation(self.model, parameter_values = 
-                                   self.parameter_values, experiment = 
-                                   experiment_dis)
-        sim_dis.build_for_experiment(initial_soc = 1.0)
-        sol_dis = sim_dis.solve()
-        total_energy_dis = sol_dis["Power [W]"].data.mean() * sol_dis["Time [h]"].data[-1]
-        #print(f"Total energy discharge is: {total_energy_dis:.2f} [W.h]") 
+        # simulate a charge/discharge cycle
+        sim.build(initial_soc=0.0)
+        sol = sim.step(dt=1E5,starting_solution=None, inputs={"Power [W]": -power_cell})
+        sol.termination = "final time" # trick!
+        end_time = sol["Time [h]"].data[-1]
+        total_energy_ch = power_cell * end_time
+        print(f"Total energy charge is: {total_energy_ch:.2f} [W.h]")
+        sol = sim.step(dt=1E5,starting_solution=self.sol, inputs={"Power [W]":power_cell})
+        total_energy_dis = power_cell * (sol["Time [h]"].data[-1] - end_time)
+        print(f"Total energy discharge is: {total_energy_dis:.2f} [W.h]")
+        sol.plot(["Power [W]", "Voltage [V]", "Current [A]"])
         
         # determine battery pack parameters
         eta_round_trip = total_energy_dis / total_energy_ch
@@ -128,8 +127,9 @@ class Battery:
         
 if __name__ == "__main__":
     bat1 = Battery(soc = 0.2, params_cell="Chen2020")
-    bat1.initialize()
+
     #traj_temp1, traj_soc1 = bat1.charge(power = 10)
+    '''
     bat1.charge_ts(arr_power = [5,6,5,6,5,6], arr_temp_ambient=[25,25,25,25,25,25])
     
     plt.figure()
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     plt.figure()
     plt.plot(bat1.hist_dt_voltage)
     plt.show()
-    
+    '''
     
     
 
