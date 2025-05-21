@@ -27,7 +27,7 @@ class Battery:
         self.sol = None
         self.initialize()
         
-    def initialize(self, power_cell = 9.0):    
+    def initialize(self, power_cell = 3.6):    
         
         '''
         determine number of cells and efficiencies
@@ -41,29 +41,31 @@ class Battery:
         else:
             raise Exception("Cell model is not DFN.")
         self.parameter_values = pybamm.ParameterValues(self.params_cell)
-        self.v_low_cut = self.parameter_values["Lower voltage cut-off [V]"]
-        self.v_upp_cut = self.parameter_values["Upper voltage cut-off [V]"]
-        #self.cap_nominal = self.parameter_values["Nominal cell capacity [A.h]"]  
         self.parameter_values.update({"Power function [W]": pybamm.InputParameter("Power [W]")}, 
                                      check_already_exists=False)
-        sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values)
+        self.sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values)
         
         # simulate a charge/discharge cycle
-        sim.build(initial_soc=0.0)
-        sol = sim.step(dt=1E5,starting_solution=None, inputs={"Power [W]": -power_cell})
+        self.sim.build(initial_soc=0.0)
+        sol = self.sim.step(dt=1E5,starting_solution=None, inputs={"Power [W]": -power_cell})
         sol.termination = "final time" # trick!
         end_time = sol["Time [h]"].data[-1]
         total_energy_ch = power_cell * end_time
         print(f"Total energy charge is: {total_energy_ch:.2f} [W.h]")
-        sol = sim.step(dt=1E5,starting_solution=self.sol, inputs={"Power [W]":power_cell})
+        sol = self.sim.step(dt=1E5,starting_solution=sol, inputs={"Power [W]":power_cell})
+        sol.termination = "final time" # trick!
         total_energy_dis = power_cell * (sol["Time [h]"].data[-1] - end_time)
         print(f"Total energy discharge is: {total_energy_dis:.2f} [W.h]")
-        sol.plot(["Power [W]", "Voltage [V]", "Current [A]"])
+        #sol.plot(["Power [W]", "Voltage [V]", "Current [A]"])
         
         # determine battery pack parameters
         eta_round_trip = total_energy_dis / total_energy_ch
         self.eta_ch, self.eta_dis = eta_round_trip**0.5, eta_round_trip**0.5
         self.n_cell = math.ceil(self.e_max*1E3*2/(total_energy_dis+total_energy_ch))
+        
+        self.parameter_values.update({"Ambient temperature [K]": pybamm.InputParameter("Ambient temperature [K]"),
+                                      "Initial temperature [K]": pybamm.InputParameter("Initial temperature [K]")})
+        self.parameter_values["Upper voltage cut-off [V]"] = 4.5
         
     def update_heat_transfer_coefficient(self, val_new):
         '''
@@ -79,24 +81,18 @@ class Battery:
         
         '''
         power_cell = power / self.n_cell * 1E3 # in Watt
-        if power > 0:
-            experiment = pybamm.Experiment([f"Charge at {power_cell} W for {length_t*60} minutes"])
-        elif power < 0:
-            experiment = pybamm.Experiment([f"Discharge at {-power_cell} W for {length_t*60} minutes"])
-        else:
-            experiment = pybamm.Experiment([f"Rest for {length_t*60} minutes"])
-        self.experiment = experiment
-        self.parameter_values["Ambient temperature [K]"] = temp_ambient + 273.15    
-        self.parameter_values["Initial temperature [K]"] = self.temp_cell + 273.15  
-        sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values, experiment = experiment)
-        self.sim = sim
         try:
             if self.sol == None:
-                sim.build_for_experiment(initial_soc = self.soc)  
-                sol = sim.solve()
+                # drop the charge/discharge cycle data
+                self.sim = pybamm.Simulation(self.model, parameter_values = self.parameter_values)
+                self.sim.build(initial_soc = self.soc)  
+                sol = self.sim.step(dt=length_t*3600,starting_solution=None, inputs={"Power [W]": -power_cell,
+                     "Ambient temperature [K]": temp_ambient+273.15, "Initial temperature [K]": self.temp_cell+273.15})
                 self.hist_voltage = np.append(self.hist_voltage, sol["Voltage [V]"].entries[0])
             else:
-                sol = sim.solve(starting_solution = self.sol)
+                #self.sol.termination = "final time" # trick!
+                sol = self.sim.step(dt=length_t*3600,starting_solution=self.sol, inputs={"Power [W]": -power_cell,
+                     "Ambient temperature [K]": temp_ambient+273.15, "Initial temperature [K]": self.temp_cell+273.15})
             self.sol = sol
             traj_temp = sol["Cell temperature [C]"].entries[0,:]
             traj_soc = self.soc_init - sol["Discharge capacity [A.h]"].data \
@@ -126,11 +122,9 @@ class Battery:
             self.charge(power = power, temp_ambient = temp_ambient, length_t = length_t)
         
 if __name__ == "__main__":
-    bat1 = Battery(soc = 0.2, params_cell="Chen2020")
-
-    #traj_temp1, traj_soc1 = bat1.charge(power = 10)
-    '''
-    bat1.charge_ts(arr_power = [5,6,5,6,5,6], arr_temp_ambient=[25,25,25,25,25,25])
+    bat1 = Battery(soc = 0.2)
+    
+    bat1.charge_ts(arr_power = [5,6,5,6,5,6,5,6,5,6], arr_temp_ambient=[25,28,30,35,30,25,25,25,25,25])
     
     plt.figure()
     plt.plot(bat1.hist_soc)
@@ -143,8 +137,11 @@ if __name__ == "__main__":
     plt.figure()
     plt.plot(bat1.hist_dt_voltage)
     plt.show()
-    '''
     
+    plt.figure()
+    plt.plot(bat1.hist_dt_power)
+    plt.show()
+        
     
 
     

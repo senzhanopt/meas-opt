@@ -250,13 +250,19 @@ def process_storage(i):
     battery = Battery(p_max=s_storage[i],e_max=e_storage[i],soc=soc_init,temp_cell=daily_temperature[0])
     battery.charge_ts(mat_p_storage[:, i], daily_temperature, itr_length)
     return battery.hist_temp_cell, battery.hist_voltage
-#with Pool() as pool:
-#    results = pool.map(process_storage, range(1))
-l_b = [0]
-for i in l_b:
-    hist_temp_cell, hist_voltage = process_storage(i)
-    mat_temp[:, i] = hist_temp_cell
-    mat_voltage[:, i] = hist_voltage
+
+l_b = range(4)
+if False:
+    with Pool(processes=4) as pool:
+        results = pool.map(process_storage, l_b)
+    for i, (temp, voltage) in enumerate(results):
+        mat_temp[:, i] = temp
+        mat_voltage[:, i] = voltage
+else:    
+    for i in l_b:
+        hist_temp_cell, hist_voltage = process_storage(i)
+        mat_temp[:, i] = hist_temp_cell
+        mat_voltage[:, i] = hist_voltage
 
 if True:
     # visualization
