@@ -13,9 +13,9 @@ from power_grid_model import ComponentType, DatasetType, initialize_array, Power
 import warnings
 warnings.filterwarnings('ignore')
 from tqdm import tqdm
-import time
 import cvxpy as cp
-from multiprocessing import Pool
+from sensitivity import sensitivity_voltage
+
 
 def powerflow(p_load, q_load, p_sgen, q_sgen, p_storage, q_storage):
     update_data['sym_load']['p_specified'] = np.concatenate((p_load, p_storage))*1E3
@@ -46,6 +46,9 @@ def prob_lyapunov():
     p_trafo = cp.Parameter(1)
     q_trafo = cp.Parameter(1)
     
+    v_cell = cp.Parameter(len(idx_storage))
+    voltage_sensitivity = cp.Parameter(len(idx_storage))
+     
     # variables
     p_ch = cp.Variable(n_storage)
     q_ch = cp.Variable(n_storage)
@@ -74,6 +77,12 @@ def prob_lyapunov():
 
     cons += [cp.square(p_trafo+cp.sum(p_ch)-cp.sum(p_ch_last)-cp.sum(p_pv)+cp.sum(p_pv_last)) 
              + cp.square(q_trafo+cp.sum(q_ch)-cp.sum(q_ch_last)-cp.sum(q_pv)+cp.sum(q_pv_last)) <= s_trafo**2 ]
+    
+    if control_voltage:
+        for i,j in enumerate(idx_storage):
+            cons += [v_cell[i] + voltage_sensitivity[i] * p_ch[j] <= v_cell_max]
+            cons += [v_cell[i] + voltage_sensitivity[i] * p_ch[j] >= v_cell_min]
+    
     # objective
     obj = cp.Minimize(cp.sum_squares(p_max_pv-p_pv) + 0.1 * cp.sum_squares(q_pv)
                       + 0.1 * cp.sum_squares(p_ch) + 0.1 * cp.sum_squares(q_ch) 
@@ -86,6 +95,8 @@ def prob_lyapunov():
             "p_pv": p_pv,
             "q_pv": q_pv,
             "v_meas": v_meas,
+            "v_cell": v_cell,
+            "voltage_sensitivity": voltage_sensitivity,
             "p_trafo": p_trafo,
             "q_trafo": q_trafo,
             "soc_storage": soc_storage,
@@ -96,9 +107,11 @@ def prob_lyapunov():
             "q_pv_last": q_pv_last
             }
 
-def solve_prob_lyapunov(v_meas, p_trafo, q_trafo, soc_storage, p_max_pv,
+def solve_prob_lyapunov(v_meas, v_cell, voltage_sensitivity, p_trafo, q_trafo, soc_storage, p_max_pv,
                         p_ch_last, q_ch_last, p_pv_last, q_pv_last):
     prob_lyapunov["v_meas"].value = v_meas
+    prob_lyapunov["v_cell"].value = v_cell
+    prob_lyapunov["voltage_sensitivity"].value = voltage_sensitivity
     prob_lyapunov["p_trafo"].value = p_trafo
     prob_lyapunov["q_trafo"].value = q_trafo
     prob_lyapunov["soc_storage"].value = soc_storage
@@ -120,6 +133,9 @@ def solve_prob_lyapunov(v_meas, p_trafo, q_trafo, soc_storage, p_max_pv,
 
 
 #%% similation
+control_voltage = False
+control_thermal = False
+
 # simulation parameters
 start, end = 224, 225
 n_timesteps = (end-start)*96
@@ -150,6 +166,7 @@ e_storage = net.storage.max_e_mwh.to_numpy() * 1E3
 s_trafo = net.trafo.sn_mva[0] * 1E3 
 soc_min, soc_max, soc_init = 0.0, 1.0, 0.25
 eta_ch, eta_dis = 0.97, 0.97
+v_cell_min, v_cell_max = 2.5, 4.2
 
 # read load profiles
 prof = sb.get_absolute_values(net, 1)
@@ -158,6 +175,9 @@ load_q = prof[('load', 'q_mvar')].iloc[start*96:end*96,:].to_numpy() * 1E3
 # match sgen and storage profiles
 sgen_p = sb.get_absolute_profiles_from_relative_profiles(net, 'sgen', 'sn_mva').iloc[start*96:end*96,:].to_numpy() * 1E3
 storage_p = sb.get_absolute_profiles_from_relative_profiles(net, 'storage', 'sn_mva').iloc[start*96:end*96,:].to_numpy() * 1E3
+
+# electrochemical simulation of batteries
+daily_temperature = pd.read_csv('data/summer_day_temperature_profile_5min.csv', index_col = 0)["Temperature (C)"].to_numpy()
 
 # use pgm
 net_pgm = copy.deepcopy(net)
@@ -179,8 +199,6 @@ mat_X_storage = pd.read_csv('data/mat_X_storage.csv', index_col = 0).to_numpy()
 mat_R_pv = pd.read_csv('data/mat_R_pv.csv', index_col = 0).to_numpy()
 mat_X_pv = pd.read_csv('data/mat_X_pv.csv', index_col = 0).to_numpy()
 
-# build optimization problem instance
-prob_lyapunov = prob_lyapunov()
 
 # store all iterates
 mat_p_storage = np.zeros((n_timesteps*n_itr, n_storage))
@@ -192,6 +210,7 @@ mat_v = np.ones((n_timesteps*n_itr, n_bus-1))
 mat_loading = np.zeros(n_timesteps*n_itr)
 mat_p_trafo = np.zeros(n_timesteps*n_itr)
 
+
 # initialize
 p_pv = copy.deepcopy(sgen_p[0,:]) 
 q_pv = np.zeros(n_pv) 
@@ -199,6 +218,16 @@ p_storage = np.zeros(n_storage)
 q_storage = np.zeros(n_storage)
 soc = soc_init * np.ones(n_storage)
 mat_soc_storage[0,:] = soc
+
+idx_storage = range(10)
+mat_temp_cell = np.zeros((n_timesteps*n_itr+1, len(idx_storage)))
+mat_voltage = np.zeros((n_timesteps*n_itr+1, len(idx_storage)))
+l_storage = []
+for i in idx_storage:
+    l_storage.append(Battery(p_max=s_storage[i],e_max=e_storage[i],soc=soc_init,temp_cell=daily_temperature[0]))
+
+# build optimization problem instance
+prob_lyapunov = prob_lyapunov()
 
 # iterating process
 for itr in tqdm(range(n_timesteps * n_itr)):
@@ -216,6 +245,11 @@ for itr in tqdm(range(n_timesteps * n_itr)):
         else:
             p_max_dis = (soc[i]-soc_min)*e_storage[i]*eta_dis/itr_length
             p_storage[i] = max(p_storage[i], -p_max_dis)
+            
+    for j,i in enumerate(idx_storage):
+        l_storage[j].charge(p_storage[i],itr_length,daily_temperature[itr])
+    v_cell = [l_storage[i].voltage for i in range(len(idx_storage))]
+    voltage_sensitivity = [sensitivity_voltage(l_storage[i].soc, l_storage[i].p_max) for i in range(len(idx_storage))]
 
     # save iterates
     mat_p_storage[itr,:] = p_storage
@@ -238,31 +272,15 @@ for itr in tqdm(range(n_timesteps * n_itr)):
     mat_p_trafo[itr] = p_trafo
     
     # call optimization
-    p_storage, q_storage, p_pv, q_pv = solve_prob_lyapunov(v, p_trafo, q_trafo, soc, sgen_p_current,
-                         p_storage, q_storage, p_pv, q_pv)
+    p_storage, q_storage, p_pv, q_pv = solve_prob_lyapunov(v,v_cell,voltage_sensitivity, 
+                                                           p_trafo, q_trafo, soc, sgen_p_current,
+                                                           p_storage, q_storage, p_pv, q_pv)
+    
     
 
-# electrochemical simulation of batteries
-daily_temperature = pd.read_csv('data/summer_day_temperature_profile_5min.csv', index_col = 0)["Temperature (C)"].to_numpy()
-mat_temp = np.zeros((n_timesteps*n_itr+1, n_storage))
-mat_voltage = np.zeros((n_timesteps*n_itr+1, n_storage))
-def process_storage(i):
-    battery = Battery(p_max=s_storage[i],e_max=e_storage[i],soc=soc_init,temp_cell=daily_temperature[0])
-    battery.charge_ts(mat_p_storage[:, i], daily_temperature, itr_length)
-    return battery.hist_temp_cell, battery.hist_voltage
-
-l_b = range(4)
-if False:
-    with Pool(processes=4) as pool:
-        results = pool.map(process_storage, l_b)
-    for i, (temp, voltage) in enumerate(results):
-        mat_temp[:, i] = temp
-        mat_voltage[:, i] = voltage
-else:    
-    for i in l_b:
-        hist_temp_cell, hist_voltage = process_storage(i)
-        mat_temp[:, i] = hist_temp_cell
-        mat_voltage[:, i] = hist_voltage
+for j in range(len(idx_storage)):
+    mat_voltage[:,j] = l_storage[j].hist_voltage
+    mat_temp_cell[:,j] = l_storage[j].hist_temp_cell
 
 if True:
     # visualization
@@ -301,14 +319,15 @@ if True:
     plt.title("soc")
     plt.show()
     
-    for i in l_b:
+    for i in range(len(idx_storage)):
         plt.plot(mat_voltage[:, i], label = f'storage {i}')
     plt.legend()
     plt.title("voltage")
+    plt.ylim(3.5,4.2)
     plt.show()        
 
-    for i in l_b:
-        plt.plot(mat_temp[:, i], label = f'storage {i}')
+    for i in range(len(idx_storage)):
+        plt.plot(mat_temp_cell[:, i], label = f'storage {i}')
     plt.plot(daily_temperature, label = "ambient")
     plt.legend()
     plt.title("temperature")
@@ -317,14 +336,16 @@ if True:
         
         
     name = "_lyapunov"
+    if control_voltage:
+        name += '_voltage'
+    if control_thermal:
+        name += '_thermal'
     pd.DataFrame(mat_p_pv).to_csv('result/' + 'mat_p_pv' + name +'.csv')
     pd.DataFrame(mat_q_pv).to_csv('result/' + 'mat_q_pv' + name +'.csv')
     pd.DataFrame(mat_v).to_csv('result/' + 'mat_v' + name +'.csv')
     pd.DataFrame(mat_loading).to_csv('result/' + 'mat_loading' + name +'.csv')
     pd.DataFrame(mat_p_storage).to_csv('result/' + 'mat_p_storage' + name +'.csv')
     pd.DataFrame(mat_q_storage).to_csv('result/' + 'mat_q_storage' + name +'.csv')
-
-
 
 
 

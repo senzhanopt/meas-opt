@@ -65,7 +65,8 @@ class Battery:
         
         self.parameter_values.update({"Ambient temperature [K]": pybamm.InputParameter("Ambient temperature [K]"),
                                       "Initial temperature [K]": pybamm.InputParameter("Initial temperature [K]")})
-        self.parameter_values["Upper voltage cut-off [V]"] = 4.5
+        self.parameter_values["Upper voltage cut-off [V]"] = 5.0
+        self.parameter_values["Lower voltage cut-off [V]"] = 1.5
         
     def update_heat_transfer_coefficient(self, val_new):
         '''
