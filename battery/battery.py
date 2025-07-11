@@ -92,7 +92,7 @@ class Battery:
                 self.hist_voltage = np.append(self.hist_voltage, sol["Voltage [V]"].entries[0])
             else:
                 #self.sol.termination = "final time" # trick!
-                sol = self.sim.step(dt=length_t*3600,starting_solution=self.sol, inputs={"Power [W]": -power_cell,
+                sol = self.sim.step(dt=length_t*3600,starting_solution=self.sol.last_state, inputs={"Power [W]": -power_cell,
                      "Ambient temperature [K]": temp_ambient+273.15, "Initial temperature [K]": self.temp_cell+273.15})
             self.sol = sol
             traj_temp = sol["Cell temperature [C]"].entries[0,:]
@@ -105,11 +105,6 @@ class Battery:
             self.hist_soc = np.append(self.hist_soc, self.soc)
             self.hist_voltage = np.append(self.hist_voltage, self.voltage)
             self.hist_temp_cell = np.append(self.hist_temp_cell, self.temp_cell)
-            self.hist_dt_temp_cell = traj_temp   
-            self.hist_dt_soc = traj_soc       
-            self.hist_dt_power = sol["Power [W]"].entries     
-            self.hist_dt_current = sol["Current [A]"].entries      
-            self.hist_dt_voltage = traj_voltage
         except:
             print("Solver fails to converge.")
 
@@ -130,20 +125,7 @@ if __name__ == "__main__":
     plt.figure()
     plt.plot(bat1.hist_soc)
     plt.show()
-    
-    plt.figure()
-    plt.plot(bat1.hist_dt_temp_cell)
-    plt.show()
-    
-    plt.figure()
-    plt.plot(bat1.hist_dt_voltage)
-    plt.show()
-    
-    plt.figure()
-    plt.plot(bat1.hist_dt_power)
-    plt.show()
-        
-    
+
 
     
     
