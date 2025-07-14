@@ -52,7 +52,7 @@ class Battery:
         end_time = sol["Time [h]"].data[-1]
         total_energy_ch = power_cell * end_time
         print(f"Total energy charge is: {total_energy_ch:.2f} [W.h]")
-        sol = self.sim.step(dt=1E5,starting_solution=sol, inputs={"Power [W]":power_cell})
+        sol = self.sim.step(dt=1E5,starting_solution=sol.last_state, inputs={"Power [W]":power_cell})
         sol.termination = "final time" # trick!
         total_energy_dis = power_cell * (sol["Time [h]"].data[-1] - end_time)
         print(f"Total energy discharge is: {total_energy_dis:.2f} [W.h]")
@@ -66,7 +66,7 @@ class Battery:
         self.parameter_values.update({"Ambient temperature [K]": pybamm.InputParameter("Ambient temperature [K]"),
                                       "Initial temperature [K]": pybamm.InputParameter("Initial temperature [K]")})
         self.parameter_values["Upper voltage cut-off [V]"] = 5.0
-        self.parameter_values["Lower voltage cut-off [V]"] = 1.5
+        self.parameter_values["Lower voltage cut-off [V]"] = 1.0
         
     def update_heat_transfer_coefficient(self, val_new):
         '''
