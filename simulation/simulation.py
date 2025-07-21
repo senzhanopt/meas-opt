@@ -14,7 +14,7 @@ import warnings
 warnings.filterwarnings('ignore')
 from tqdm import tqdm
 import cvxpy as cp
-from sensitivity import sensitivity_voltage
+from sensitivity import sensitivity_voltage, sensitivity_thermal
 
 
 def powerflow(p_load, q_load, p_sgen, q_sgen, p_storage, q_storage):
@@ -47,6 +47,8 @@ def prob_lyapunov():
     q_trafo = cp.Parameter(1)
     
     v_cell = cp.Parameter(len(idx_storage))
+    temp_cell = cp.Parameter(len(idx_storage))
+    temp_ambient = cp.Parameter(1)
     voltage_sensitivity = cp.Parameter(len(idx_storage))
      
     # variables
@@ -82,7 +84,12 @@ def prob_lyapunov():
         for i,j in enumerate(idx_storage):
             cons += [v_cell[i] + voltage_sensitivity[i] * p_ch[j] <= v_cell_max]
             cons += [v_cell[i] + voltage_sensitivity[i] * p_ch[j] >= v_cell_min]
-    
+            
+    if control_thermal:
+        for i,j in enumerate(idx_storage):
+            coeff1, coeff2 = sensitivity_thermal(s_storage[j])
+            cons += [temp_cell[i] + (temp_cell[i]-temp_ambient)*coeff1 + cp.square(p_ch[j])*coeff2 <= temp_cell_max]
+                
     # objective
     obj = cp.Minimize(cp.sum_squares(p_max_pv-p_pv) + 0.1 * cp.sum_squares(q_pv)
                       + 0.1 * cp.sum_squares(p_ch) + 0.1 * cp.sum_squares(q_ch) 
@@ -96,6 +103,8 @@ def prob_lyapunov():
             "q_pv": q_pv,
             "v_meas": v_meas,
             "v_cell": v_cell,
+            "temp_cell": temp_cell,
+            "temp_ambient": temp_ambient,
             "voltage_sensitivity": voltage_sensitivity,
             "p_trafo": p_trafo,
             "q_trafo": q_trafo,
@@ -107,10 +116,12 @@ def prob_lyapunov():
             "q_pv_last": q_pv_last
             }
 
-def solve_prob_lyapunov(v_meas, v_cell, voltage_sensitivity, p_trafo, q_trafo, soc_storage, p_max_pv,
+def solve_prob_lyapunov(v_meas, v_cell, voltage_sensitivity, temp_cell,temp_ambient, p_trafo, q_trafo, soc_storage, p_max_pv,
                         p_ch_last, q_ch_last, p_pv_last, q_pv_last):
     prob_lyapunov["v_meas"].value = v_meas
     prob_lyapunov["v_cell"].value = v_cell
+    prob_lyapunov["temp_cell"].value = temp_cell
+    prob_lyapunov["temp_ambient"].value = temp_ambient
     prob_lyapunov["voltage_sensitivity"].value = voltage_sensitivity
     prob_lyapunov["p_trafo"].value = p_trafo
     prob_lyapunov["q_trafo"].value = q_trafo
@@ -164,9 +175,10 @@ s_pv = net.sgen.sn_mva.to_numpy() * 1E3
 s_storage = net.storage.sn_mva.to_numpy() * 1E3
 e_storage = net.storage.max_e_mwh.to_numpy() * 1E3
 s_trafo = net.trafo.sn_mva[0] * 1E3 
-soc_min, soc_max, soc_init = 0.0, 1.0, 0.25
+soc_min, soc_max, soc_init = 0.0, 1.0, 0.0
 eta_ch, eta_dis = 0.97, 0.97
 v_cell_min, v_cell_max = 2.5, 4.2
+temp_cell_max = 45
 
 # read load profiles
 prof = sb.get_absolute_values(net, 1)
@@ -177,7 +189,7 @@ sgen_p = sb.get_absolute_profiles_from_relative_profiles(net, 'sgen', 'sn_mva').
 storage_p = sb.get_absolute_profiles_from_relative_profiles(net, 'storage', 'sn_mva').iloc[start*96:end*96,:].to_numpy() * 1E3
 
 # electrochemical simulation of batteries
-daily_temperature = pd.read_csv('data/summer_day_temperature_profile_5min.csv', index_col = 0)["Temperature (C)"].to_numpy()
+daily_temperature = pd.read_csv('data/temperature_5minute.csv')["temp (C)"].to_numpy()
 
 # use pgm
 net_pgm = copy.deepcopy(net)
@@ -219,12 +231,14 @@ q_storage = np.zeros(n_storage)
 soc = soc_init * np.ones(n_storage)
 mat_soc_storage[0,:] = soc
 
-idx_storage = range(10)
+idx_storage = range(n_storage)
 mat_temp_cell = np.zeros((n_timesteps*n_itr+1, len(idx_storage)))
 mat_voltage = np.zeros((n_timesteps*n_itr+1, len(idx_storage)))
 l_storage = []
 for i in idx_storage:
-    l_storage.append(Battery(p_max=s_storage[i],e_max=e_storage[i],soc=soc_init,temp_cell=daily_temperature[0]))
+    battery = Battery(p_max=s_storage[i],e_max=e_storage[i],soc=soc_init,temp_cell=daily_temperature[0])
+    battery.update_heat_transfer_coefficient(0.005,0.5)
+    l_storage.append(battery)
 
 # build optimization problem instance
 prob_lyapunov = prob_lyapunov()
@@ -249,6 +263,8 @@ for itr in tqdm(range(n_timesteps * n_itr)):
     for j,i in enumerate(idx_storage):
         l_storage[j].charge(p_storage[i],itr_length,daily_temperature[itr])
     v_cell = [l_storage[i].voltage for i in range(len(idx_storage))]
+    temp_cell = [l_storage[i].temp_cell for i in range(len(idx_storage))]
+    temp_ambient = np.array([daily_temperature[itr]])
     voltage_sensitivity = [sensitivity_voltage(l_storage[i].soc, l_storage[i].p_max) for i in range(len(idx_storage))]
 
     # save iterates
@@ -272,7 +288,7 @@ for itr in tqdm(range(n_timesteps * n_itr)):
     mat_p_trafo[itr] = p_trafo
     
     # call optimization
-    p_storage, q_storage, p_pv, q_pv = solve_prob_lyapunov(v,v_cell,voltage_sensitivity, 
+    p_storage, q_storage, p_pv, q_pv = solve_prob_lyapunov(v,v_cell,voltage_sensitivity,temp_cell,temp_ambient,
                                                            p_trafo, q_trafo, soc, sgen_p_current,
                                                            p_storage, q_storage, p_pv, q_pv)
     
@@ -323,12 +339,14 @@ if True:
         plt.plot(mat_voltage[:, i], label = f'storage {i}')
     plt.legend()
     plt.title("voltage")
-    plt.ylim(3.5,4.2)
+    plt.axhline(y=4.2, color='r', linestyle='--', linewidth=2)
+    plt.ylim(2.4,4.3)
     plt.show()        
 
     for i in range(len(idx_storage)):
         plt.plot(mat_temp_cell[:, i], label = f'storage {i}')
     plt.plot(daily_temperature, label = "ambient")
+    plt.axhline(y=45, color='r', linestyle='--', linewidth=2)
     plt.legend()
     plt.title("temperature")
     plt.show()        

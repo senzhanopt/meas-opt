@@ -68,13 +68,20 @@ class Battery:
         self.parameter_values["Upper voltage cut-off [V]"] = 5.0
         self.parameter_values["Lower voltage cut-off [V]"] = 1.0
         
-    def update_heat_transfer_coefficient(self, val_new):
+    def update_heat_transfer_coefficient(self, times_transfer=1.0, times_capacity=1.0):
         '''
         update parameters for simulation
 
         '''
-        print(f"By default: {self.parameter_values['Total heat transfer coefficient [W.m-2.K-1]']}")
-        self.parameter_values["Total heat transfer coefficient [W.m-2.K-1]"] = val_new
+        # cooling_area = self.parameter_values["Electrode width [m]"] * self.parameter_values["Electrode height [m]"]
+        # self.parameter_values["Cell cooling surface area [m2]"] = 2*cooling_area
+        # print(f"By default: {self.parameter_values['Total heat transfer coefficient [W.m-2.K-1]']}")
+        self.parameter_values["Total heat transfer coefficient [W.m-2.K-1]"] *= times_transfer
+        self.parameter_values["Negative current collector specific heat capacity [J.kg-1.K-1]"] *= times_capacity
+        self.parameter_values["Positive current collector specific heat capacity [J.kg-1.K-1]"] *= times_capacity
+        self.parameter_values["Negative electrode specific heat capacity [J.kg-1.K-1]"] *= times_capacity
+        self.parameter_values["Positive electrode specific heat capacity [J.kg-1.K-1]"] *= times_capacity
+        self.parameter_values["Separator specific heat capacity [J.kg-1.K-1]"] *= times_capacity   
         
     def charge(self, power = 0.0, length_t = 0.25, temp_ambient = 25):
         '''
@@ -119,11 +126,11 @@ class Battery:
         
 if __name__ == "__main__":
     bat1 = Battery(soc = 0.2)
-    
+    bat1.update_heat_transfer_coefficient(0.01,0.5)
     bat1.charge_ts(arr_power = [5,6,5,6,5,6,5,6,5,6], arr_temp_ambient=[25,28,30,35,30,25,25,25,25,25])
     
     plt.figure()
-    plt.plot(bat1.hist_soc)
+    plt.plot(bat1.hist_temp_cell)
     plt.show()
 
 

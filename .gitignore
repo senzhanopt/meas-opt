@@ -1,1 +1,5 @@
 battery/__pycache__/
+
+simulation/__pycache__/
+
+*.pyc

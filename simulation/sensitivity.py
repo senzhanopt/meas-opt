@@ -1,39 +1,43 @@
 import numpy as np
 import math
+from sklearn.linear_model import LinearRegression
+import pandas as pd
 
-def sensitivity_voltage(soc, p_max):
+temperature = pd.read_csv("data\\temperature_5minute.csv")["temp (C)"].to_numpy()
+
+def sensitivity_voltage(soc, p_max, delta = 0.1):
     
     direc = "data\\voltage_" + str(p_max) +'.npy'
     data_voltage = np.load(direc)
     
-    soc_up = math.ceil(soc*10)/10
-    soc_down = math.floor(soc*10)/10
-    
-    if soc_up == soc_down:
-        soc_up += 0.1
-        soc_down -= 0.1
-        soc_up = min(soc_up, 1.0)
-        soc_down = max(soc_down, 0.0)
+    soc_up = soc + 0.1
+    soc_down = soc - 0.1
+    soc_up = min(soc_up, 1.0)
+    soc_down = max(soc_down, 0.0)
         
-    l = np.array([])
-        
-    for soc in np.arange(soc_down, soc_up+0.1, 0.1):
-        soc = np.round(soc,1)
-    
-        profile = data_voltage[data_voltage[:,1]==soc]
-        idx = np.where(np.abs(profile[:,0]) <= 1e-6)
-        profile[idx,0] = 1E-6
-        sens = (profile[:,2] - profile[idx,2]) / profile[:,0]
-        sens = np.delete(sens,idx)
-    
-        l = np.concatenate((l, sens))
-    
-    return np.max(l)
+    l = []
+    for i in range(1,len(data_voltage)):
+        if data_voltage[i,0] <= soc_up and data_voltage[i,0] >= soc_down and abs(data_voltage[i,1])>=1e-4:
+            sens = (data_voltage[i,2]-data_voltage[i-1,2])/data_voltage[i,1]
+            l.append(sens)
+            
+    return max(l)
 
 
-def sensitivity_thermal(soc, p_max):
+def sensitivity_thermal(p_max):
      
-    direc = "data\\temp_" + str(p_max) +'.npy'
+    direc = "data\\temperature_" + str(p_max) +'.npy'
     data_temp = np.load(direc)
+    
+    power = data_temp[1:,1]
+    power = power**2
+    temp_delta = data_temp[1:,2] - data_temp[:-1,2]
+    temp_ambient = np.tile(temperature,7)
+    temp_delta_ambient = data_temp[:-1,2] - temp_ambient[:-1]
+    
+    X = np.concatenate((temp_delta_ambient.reshape(-1, 1), power.reshape(-1, 1)),axis=1)
+    y = temp_delta
+    model = LinearRegression(fit_intercept=False)
+    model.fit(X, y)
 
-    return data_temp
+    return model.coef_
