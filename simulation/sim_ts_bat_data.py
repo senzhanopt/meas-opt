@@ -51,7 +51,7 @@ if __name__ == "__main__":
     for s in s_unique:
         battery = simulate_battery(s)
         voltage_save = np.concatenate((battery.hist_soc[:-1].reshape(-1, 1), battery.hist_power[:].reshape(-1, 1), 
-                                    battery.hist_voltage[1:].reshape(-1, 1)),axis=1)
+                                    battery.hist_voltage[1:].reshape(-1, 1),battery.hist_voltage[:-1].reshape(-1, 1)),axis=1)
         np.save('data\\voltage_'+str(s)+'.npy',voltage_save)
         temp_save = np.concatenate((battery.hist_soc[:-1].reshape(-1, 1), battery.hist_power[:].reshape(-1, 1), 
                                     battery.hist_temp_cell[1:].reshape(-1, 1)),axis=1)
