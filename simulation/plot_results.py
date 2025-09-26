@@ -146,7 +146,7 @@ plt.show()
 
 storage_real = pd.read_csv("result\mat_p_storage_lyapunov_voltage_thermal.csv",index_col=0).to_numpy()
 storage_real1 = pd.read_csv("result\mat_p_storage_lyapunov_voltage_thermal_alpha0.1.csv",index_col=0).to_numpy()
-storage_real2 = pd.read_csv("result\mat_p_storage_lyapunov_voltage_thermal_alpha1.0.csv",index_col=0).to_numpy()
+storage_real2 = pd.read_csv("result\mat_p_storage_lyapunov_voltage_thermal_alpha5.0.csv",index_col=0).to_numpy()
 storage_real3 = pd.read_csv("result\mat_p_storage_lyapunov_voltage_thermal_gamma0.01.csv",index_col=0).to_numpy()
 storage_real4 = pd.read_csv("result\mat_p_storage_lyapunov_voltage_thermal_gamma0.1.csv",index_col=0).to_numpy()
 plt.figure(figsize=(6,3))
